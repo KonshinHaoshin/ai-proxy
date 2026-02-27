@@ -66,4 +66,4 @@ curl http://127.0.0.1:7890/v1/sessions \
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) file.
