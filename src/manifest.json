@@ -19,7 +19,8 @@
     "https://claude.com/*",
     "https://gemini.google.com/*",
     "https://bard.google.com/*",
-    "http://localhost:7890/*"
+    "http://localhost:7890/*",
+    "http://127.0.0.1:7891/*"
   ],
   "background": {
     "service_worker": "background/background.js",

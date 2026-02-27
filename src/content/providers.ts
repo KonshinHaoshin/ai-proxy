@@ -1,5 +1,5 @@
-/**
- * AI Provider Adapters - 各平台消息发送实现
+﻿/**
+ * AI Provider Adapters
  */
 
 export interface AIProvider {
@@ -8,141 +8,157 @@ export interface AIProvider {
   sendMessage: (message: string) => Promise<string>;
 }
 
-// Grok adapter
+const DEFAULT_TIMEOUT_MS = 90000;
+const POLL_INTERVAL_MS = 500;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setTextInputValue(input: HTMLTextAreaElement, message: string): void {
+  input.focus();
+  input.value = message;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function getLastTextBySelectors(selectors: string[]): string {
+  for (const selector of selectors) {
+    const nodes = document.querySelectorAll(selector);
+    if (nodes.length === 0) {
+      continue;
+    }
+    const last = nodes[nodes.length - 1];
+    const text = last.textContent?.trim() || '';
+    if (text.length > 0) {
+      return text;
+    }
+  }
+  return '';
+}
+
+async function waitForAssistantReply(
+  replySelectors: string[],
+  previousSnapshot: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<string> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const latest = getLastTextBySelectors(replySelectors);
+    if (latest && latest !== previousSnapshot) {
+      return latest;
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error('Timed out waiting for AI response');
+}
+
+async function sendViaDomAutomation(options: {
+  message: string;
+  inputSelectors: string[];
+  sendSelectors: string[];
+  responseSelectors: string[];
+}): Promise<string> {
+  const input = options.inputSelectors
+    .map((selector) => document.querySelector(selector))
+    .find((el): el is HTMLTextAreaElement => el instanceof HTMLTextAreaElement);
+  if (!input) {
+    throw new Error('Input textarea not found');
+  }
+
+  const previousSnapshot = getLastTextBySelectors(options.responseSelectors);
+  setTextInputValue(input, options.message);
+  await delay(200);
+
+  const sendButton = options.sendSelectors
+    .map((selector) => document.querySelector(selector))
+    .find((el): el is HTMLButtonElement => el instanceof HTMLButtonElement);
+  if (!sendButton) {
+    throw new Error('Send button not found');
+  }
+
+  sendButton.click();
+  return waitForAssistantReply(options.responseSelectors, previousSnapshot);
+}
+
 const grokAdapter: AIProvider = {
   name: 'Grok',
   domains: ['grok.x.ai', 'grok.com'],
   async sendMessage(message: string): Promise<string> {
-    const inputBox = document.querySelector('textarea[class*="input"], textarea[class*="composer"], textarea[name="message"]');
-    if (!inputBox) throw new Error('Input box not found');
-
-    (inputBox as HTMLTextAreaElement).value = message;
-    inputBox.dispatchEvent(new Event('input', { bubbles: true }));
-    inputBox.dispatchEvent(new Event('change', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 500));
-
-    const sendButton = document.querySelector('button[class*="send"], button[type="submit"]');
-    if (!sendButton) throw new Error('Send button not found');
-
-    (sendButton as HTMLButtonElement).click();
-    await new Promise(r => setTimeout(r, 3000));
-
-    const messages = document.querySelectorAll('[class*="message"], [class*="response"]');
-    const lastMessage = messages[messages.length - 1];
-    return lastMessage?.textContent?.trim() || '';
+    return sendViaDomAutomation({
+      message,
+      inputSelectors: [
+        'textarea[class*="input"]',
+        'textarea[class*="composer"]',
+        'textarea[name="message"]'
+      ],
+      sendSelectors: ['button[class*="send"]', 'button[type="submit"]'],
+      responseSelectors: ['[class*="message"]', '[class*="response"]']
+    });
   }
 };
 
-// OpenAI ChatGPT adapter
 const openaiAdapter: AIProvider = {
   name: 'OpenAI',
   domains: ['chat.openai.com', 'chatgpt.com'],
   async sendMessage(message: string): Promise<string> {
-    const textarea = document.querySelector('textarea[id*="prompt"], textarea[name="prompt"], textarea[aria-label*="message"]');
-    if (!textarea) throw new Error('Input textarea not found');
-
-    (textarea as HTMLTextAreaElement).value = message;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 300));
-
-    const sendButton = document.querySelector('button[data-testid="send-button"], button[aria-label="Send message"]');
-    if (!sendButton) {
-      const enterButton = document.querySelector('button[class*="submit"], button[type="submit"]');
-      if (!enterButton) throw new Error('Send button not found');
-      (enterButton as HTMLButtonElement).click();
-    } else {
-      (sendButton as HTMLButtonElement).click();
-    }
-
-    await new Promise(r => setTimeout(r, 4000));
-
-    const messages = document.querySelectorAll('[data-message-author-role="assistant"], [class*="assistant"]');
-    const lastMessage = messages[messages.length - 1];
-    return lastMessage?.textContent?.trim() || '';
+    return sendViaDomAutomation({
+      message,
+      inputSelectors: [
+        'textarea[id*="prompt"]',
+        'textarea[name="prompt"]',
+        'textarea[aria-label*="message"]'
+      ],
+      sendSelectors: [
+        'button[data-testid="send-button"]',
+        'button[aria-label="Send message"]',
+        'button[class*="submit"]',
+        'button[type="submit"]'
+      ],
+      responseSelectors: ['[data-message-author-role="assistant"]', '[class*="assistant"]']
+    });
   }
 };
 
-// DeepSeek adapter
 const deepseekAdapter: AIProvider = {
   name: 'DeepSeek',
   domains: ['chat.deepseek.com', 'deepseek.com'],
   async sendMessage(message: string): Promise<string> {
-    const textarea = document.querySelector('textarea[placeholder*="message"], textarea[id*="chat"]');
-    if (!textarea) throw new Error('Input textarea not found');
-
-    (textarea as HTMLTextAreaElement).value = message;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 300));
-
-    const sendButton = document.querySelector('button[type="submit"], button[class*="send"]');
-    if (!sendButton) throw new Error('Send button not found');
-
-    (sendButton as HTMLButtonElement).click();
-    await new Promise(r => setTimeout(r, 4000));
-
-    const messages = document.querySelectorAll('[class*="message-content"], [class*="response"]');
-    const lastMessage = messages[messages.length - 1];
-    return lastMessage?.textContent?.trim() || '';
+    return sendViaDomAutomation({
+      message,
+      inputSelectors: ['textarea[placeholder*="message"]', 'textarea[id*="chat"]'],
+      sendSelectors: ['button[type="submit"]', 'button[class*="send"]'],
+      responseSelectors: ['[class*="message-content"]', '[class*="response"]']
+    });
   }
 };
 
-// Anthropic Claude adapter
 const claudeAdapter: AIProvider = {
   name: 'Claude',
   domains: ['claude.ai', 'claude.com'],
   async sendMessage(message: string): Promise<string> {
-    const textarea = document.querySelector('textarea[placeholder*="message"], textarea[name="chat-input"]');
-    if (!textarea) throw new Error('Input textarea not found');
-
-    (textarea as HTMLTextAreaElement).value = message;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 300));
-
-    const sendButton = document.querySelector('button[type="submit"], button[aria-label="Send"]');
-    if (!sendButton) throw new Error('Send button not found');
-
-    (sendButton as HTMLButtonElement).click();
-    await new Promise(r => setTimeout(r, 4000));
-
-    const messages = document.querySelectorAll('[data-testid="assistant-message"], [class*="assistant-message"]');
-    const lastMessage = messages[messages.length - 1];
-    return lastMessage?.textContent?.trim() || '';
+    return sendViaDomAutomation({
+      message,
+      inputSelectors: ['textarea[placeholder*="message"]', 'textarea[name="chat-input"]'],
+      sendSelectors: ['button[type="submit"]', 'button[aria-label="Send"]'],
+      responseSelectors: ['[data-testid="assistant-message"]', '[class*="assistant-message"]']
+    });
   }
 };
 
-// Gemini adapter
 const geminiAdapter: AIProvider = {
   name: 'Gemini',
   domains: ['gemini.google.com', 'bard.google.com'],
   async sendMessage(message: string): Promise<string> {
-    const textarea = document.querySelector('textarea[aria-label*="message"], textarea[placeholder*="prompt"]');
-    if (!textarea) throw new Error('Input textarea not found');
-
-    (textarea as HTMLTextAreaElement).value = message;
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-
-    await new Promise(r => setTimeout(r, 300));
-
-    const sendButton = document.querySelector('button[aria-label*="Send"], button[data-testid*="send"]');
-    if (!sendButton) throw new Error('Send button not found');
-
-    (sendButton as HTMLButtonElement).click();
-    await new Promise(r => setTimeout(r, 4000));
-
-    const messages = document.querySelectorAll('[role="region"], [class*="response"]');
-    const lastMessage = messages[messages.length - 1];
-    return lastMessage?.textContent?.trim() || '';
+    return sendViaDomAutomation({
+      message,
+      inputSelectors: ['textarea[aria-label*="message"]', 'textarea[placeholder*="prompt"]'],
+      sendSelectors: ['button[aria-label*="Send"]', 'button[data-testid*="send"]'],
+      responseSelectors: ['[role="region"]', '[class*="response"]']
+    });
   }
 };
 
-// All providers
 export const aiProviders: AIProvider[] = [
   grokAdapter,
   openaiAdapter,
@@ -151,13 +167,11 @@ export const aiProviders: AIProvider[] = [
   geminiAdapter
 ];
 
-// Detect current provider
 export function detectProvider(): AIProvider | null {
   const hostname = window.location.hostname;
-  return aiProviders.find(p => p.domains.some(d => hostname.includes(d))) || null;
+  return aiProviders.find((provider) => provider.domains.some((domain) => hostname.includes(domain))) || null;
 }
 
-// Get provider by name
 export function getProvider(name: string): AIProvider | undefined {
-  return aiProviders.find(p => p.name.toLowerCase() === name.toLowerCase());
+  return aiProviders.find((provider) => provider.name.toLowerCase() === name.toLowerCase());
 }

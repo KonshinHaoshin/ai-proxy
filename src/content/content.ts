@@ -1,7 +1,7 @@
 /**
  * Content Script - Intercepts AI Chat calls
  */
-import { aiProviders, detectProvider, getProvider } from './providers';
+import { detectProvider, getProvider } from './providers';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -18,6 +18,11 @@ interface ChatSession {
 let conversations: Map<string, ChatSession> = new Map();
 let currentProvider = detectProvider();
 
+function refreshProvider() {
+  currentProvider = detectProvider();
+  return currentProvider;
+}
+
 function initConversations() {
   try {
     // Generic conversation list detection
@@ -26,9 +31,6 @@ function initConversations() {
     sidebarItems.forEach((item) => {
       const id = item.getAttribute('data-id') || item.getAttribute('data-conversation-id');
       if (id) {
-        const titleEl = item.querySelector('[class*="title"], span[class*="text"], a[class*="title"]');
-        const title = titleEl?.textContent || 'Untitled';
-        
         if (!conversations.has(id)) {
           conversations.set(id, {
             id,
@@ -70,7 +72,7 @@ async function sendMessageToAI(message: string, providerName?: string): Promise<
   provider: string;
   usage: Record<string, unknown>;
 }> {
-  let provider = currentProvider;
+  let provider = refreshProvider();
   
   if (providerName) {
     provider = getProvider(providerName) || null;
@@ -126,9 +128,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
     return true;
   } else if (message.type === 'DETECT_PROVIDER') {
+    const detected = refreshProvider();
     sendResponse({ 
-      provider: currentProvider?.name || null,
-      supported: currentProvider !== null
+      provider: detected?.name || null,
+      supported: detected !== null
     });
   }
   

@@ -70,6 +70,8 @@ function renderApiKeys(keys: Array<{key: string; createdAt: number; enabled: boo
       const key = (e.target as HTMLElement).dataset.key;
       if (key) {
         await deleteApiKey(key);
+        const nextKeys = await getApiKeys();
+        renderApiKeys(nextKeys);
       }
     });
   });
@@ -81,6 +83,8 @@ function renderApiKeys(keys: Array<{key: string; createdAt: number; enabled: boo
       const currentEnabled = el.dataset.enabled === 'true';
       if (key) {
         await toggleApiKey(key, !currentEnabled);
+        const nextKeys = await getApiKeys();
+        renderApiKeys(nextKeys);
       }
     });
   });
