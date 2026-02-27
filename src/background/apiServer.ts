@@ -69,8 +69,30 @@ app.get('/health', (_req: Request, res: Response) => {
   res.json({ 
     status: 'ok', 
     timestamp: Date.now(),
-    sessions: chatSessions.size
+    sessions: chatSessions.size,
+    supported_providers: ['Grok', 'OpenAI', 'DeepSeek', 'Claude', 'Gemini']
   });
+});
+
+// Get supported providers
+app.get('/v1/providers', validateApiKey, async (_req: Request, res: Response) => {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'DETECT_PROVIDER'
+    });
+    
+    res.json({
+      supported: ['Grok', 'OpenAI', 'DeepSeek', 'Claude', 'Gemini'],
+      current: response?.provider || null,
+      active: response?.supported || false
+    });
+  } catch (error) {
+    res.json({
+      supported: ['Grok', 'OpenAI', 'DeepSeek', 'Claude', 'Gemini'],
+      current: null,
+      active: false
+    });
+  }
 });
 
 // List sessions
@@ -108,9 +130,9 @@ app.get('/v1/sessions/:sessionId', validateApiKey, (req: Request, res: Response)
   res.json(session);
 });
 
-// Send message to Grok
+// Send message to AI
 app.post('/v1/chat', validateApiKey, async (req: Request, res: Response) => {
-  const { message, session_id, model } = req.body;
+  const { message, session_id, model, provider } = req.body;
   
   if (!message) {
     res.status(400).json({ error: 'Message is required' });
@@ -144,12 +166,13 @@ app.post('/v1/chat', validateApiKey, async (req: Request, res: Response) => {
   session.messages.push(userMessage);
   
   try {
-    // Send message to content script to get Grok response
+    // Send message to content script to get AI response
     const response = await chrome.runtime.sendMessage({
-      type: 'CHAT_WITH_GROK',
+      type: 'CHAT_WITH_AI',
       message: message,
       sessionId: session.id,
-      model: model || 'grok-2'
+      model: model || 'default',
+      provider: provider // Optional: specify provider (Grok, OpenAI, DeepSeek, Claude, Gemini)
     });
     
     if (response.error) {

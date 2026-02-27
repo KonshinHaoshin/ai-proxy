@@ -1,66 +1,60 @@
 /**
- * Content Script - Intercepts Grok WebSocket/API calls
+ * Content Script - Intercepts AI Chat calls
  */
+import { aiProviders, detectProvider, getProvider } from './providers';
 
-interface GrokMessage {
+interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
 
-interface GrokConversation {
+interface ChatSession {
   id: string;
-  title: string;
-  messages: GrokMessage[];
+  provider: string;
+  messages: ChatMessage[];
   createdAt: number;
-  updatedAt: number;
 }
 
-let conversations: Map<string, GrokConversation> = new Map();
+let conversations: Map<string, ChatSession> = new Map();
+let currentProvider = detectProvider();
 
 function initConversations() {
   try {
-    const sidebarItems = document.querySelectorAll('[class*="conversation"], [data-testid*="conversation"]');
+    // Generic conversation list detection
+    const sidebarItems = document.querySelectorAll('[class*="conversation"], [data-testid*="conversation"], [class*="chat-item"]');
     
     sidebarItems.forEach((item) => {
       const id = item.getAttribute('data-id') || item.getAttribute('data-conversation-id');
       if (id) {
-        const titleEl = item.querySelector('[class*="title"], span[class*="text"]');
+        const titleEl = item.querySelector('[class*="title"], span[class*="text"], a[class*="title"]');
         const title = titleEl?.textContent || 'Untitled';
         
         if (!conversations.has(id)) {
           conversations.set(id, {
             id,
-            title: title.trim(),
+            provider: currentProvider?.name || 'Unknown',
             messages: [],
-            createdAt: Date.now(),
-            updatedAt: Date.now()
+            createdAt: Date.now()
           });
         }
       }
     });
     
-    console.log('[AI Proxy] Found conversations:', conversations.size);
+    console.log('[AI Proxy] Found conversations:', conversations.size, 'Provider:', currentProvider?.name);
   } catch (e) {
-    console.error('[Grok API Proxy] Error initializing:', e);
+    console.error('[AI Proxy] Error initializing:', e);
   }
 }
 
 function observeMessages() {
-  const messageContainer = document.querySelector('[class*="messages"], [class*="chat"]');
+  const messageContainer = document.querySelector('[class*="messages"], [class*="chat"], [role="log"], main');
   if (!messageContainer) return;
   
   const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
       mutation.addedNodes.forEach((node) => {
         if (node.nodeType === Node.ELEMENT_NODE) {
-          const element = node as Element;
-          const messageEl = element.querySelector('[class*="message"], [class*="response"]');
-          if (messageEl) {
-            const contentEl = messageEl.querySelector('[class*="content"], p, div[class*="text"]');
-            if (contentEl) {
-              console.log('[Grok API Proxy] New message detected');
-            }
-          }
+          console.log('[AI Proxy] New DOM element added');
         }
       });
     });
@@ -69,67 +63,61 @@ function observeMessages() {
   observer.observe(messageContainer, { childList: true, subtree: true });
 }
 
-async function sendMessageToGrok(message: string, model: string = 'grok-2'): Promise<{
+// Send message via detected provider
+async function sendMessageToAI(message: string, providerName?: string): Promise<{
   content: string;
   model: string;
+  provider: string;
   usage: Record<string, unknown>;
 }> {
-  const inputBox = document.querySelector('textarea[class*="input"], textarea[class*="composer"], textarea[name="message"]');
+  let provider = currentProvider;
   
-  if (!inputBox) {
-    throw new Error('Input box not found. Make sure Grok is open.');
+  if (providerName) {
+    provider = getProvider(providerName) || null;
+    if (!provider) {
+      throw new Error(`Provider "${providerName}" not found`);
+    }
   }
   
-  (inputBox as HTMLTextAreaElement).value = message;
-  inputBox.dispatchEvent(new Event('input', { bubbles: true }));
-  inputBox.dispatchEvent(new Event('change', { bubbles: true }));
-  
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  const sendButton = document.querySelector('button[class*="send"], button[type="submit"], button[class*="submit"]');
-  
-  if (!sendButton) {
-    throw new Error('Send button not found');
+  if (!provider) {
+    throw new Error('No AI provider detected. Make sure you are on a supported AI chat page.');
   }
   
-  (sendButton as HTMLButtonElement).click();
-  
-  await new Promise(resolve => setTimeout(resolve, 3000));
-  
-  const messages = document.querySelectorAll('[class*="message"], [class*="response"]');
-  const lastMessage = messages[messages.length - 1];
-  
-  let content = '';
-  if (lastMessage) {
-    const contentEl = lastMessage.querySelector('[class*="content"], p, div[class*="text"]');
-    content = contentEl?.textContent || '';
+  try {
+    const content = await provider.sendMessage(message);
+    return {
+      content,
+      model: 'default',
+      provider: provider.name,
+      usage: {}
+    };
+  } catch (error) {
+    throw new Error(`Failed to send message via ${provider.name}: ${(error as Error).message}`);
   }
-  
-  return {
-    content: content.trim(),
-    model: model,
-    usage: {}
-  };
 }
 
+// Listen for messages from background
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'GET_CONVERSATIONS') {
     const convList = Array.from(conversations.values()).map(c => ({
       id: c.id,
-      title: c.title,
+      provider: c.provider,
+      title: c.messages[0]?.content?.substring(0, 30) || 'Untitled',
       messageCount: c.messages.length,
-      updatedAt: c.updatedAt
+      createdAt: c.createdAt
     }));
-    sendResponse({ conversations: convList });
+    sendResponse({ conversations: convList, provider: currentProvider?.name });
   } else if (message.type === 'GET_CONVERSATION') {
     const conv = conversations.get(message.conversationId);
     sendResponse({ conversation: conv || null });
-  } else if (message.type === 'CHAT_WITH_GROK') {
-    sendMessageToGrok(message.message, message.model)
+  } else if (message.type === 'CHAT_WITH_GROK' || message.type === 'CHAT_WITH_AI') {
+    // Support both old and new message types
+    sendMessageToAI(message.message, message.provider)
       .then((response) => {
         sendResponse({ 
           content: response.content, 
           model: response.model,
+          provider: response.provider,
           usage: response.usage
         });
       })
@@ -137,12 +125,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ error: error.message });
       });
     return true;
+  } else if (message.type === 'DETECT_PROVIDER') {
+    sendResponse({ 
+      provider: currentProvider?.name || null,
+      supported: currentProvider !== null
+    });
   }
+  
   return false;
 });
 
 function main() {
-  console.log('[Grok API Proxy] Content script loaded');
+  console.log('[AI Proxy] Content script loaded');
+  if (currentProvider) {
+    console.log('[AI Proxy] Detected provider:', currentProvider.name);
+  }
   initConversations();
   observeMessages();
 }

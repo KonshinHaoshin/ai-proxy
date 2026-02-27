@@ -6,9 +6,11 @@
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const endpointEl = document.getElementById('endpoint');
+const currentProviderEl = document.getElementById('currentProvider');
 const apiKeyListEl = document.getElementById('apiKeyList');
 const generateKeyBtn = document.getElementById('generateKey');
 const copyEndpointBtn = document.getElementById('copyEndpoint');
+const providerItems = document.querySelectorAll('.provider-item');
 
 // Update status display
 function updateStatus(running: boolean, port?: number) {
@@ -20,6 +22,22 @@ function updateStatus(running: boolean, port?: number) {
     statusDot?.classList.remove('active');
     if (statusText) statusText.textContent = 'Not running';
   }
+}
+
+// Update provider display
+function updateProvider(provider: string | null, active: boolean) {
+  if (currentProviderEl) {
+    currentProviderEl.textContent = provider ? provider : 'No AI detected';
+  }
+  
+  providerItems.forEach(item => {
+    const providerName = item.getAttribute('data-provider');
+    if (providerName === provider && active) {
+      item.classList.add('active');
+    } else {
+      item.classList.remove('active');
+    }
+  });
 }
 
 // Render API keys list
@@ -39,7 +57,7 @@ function renderApiKeys(keys: Array<{key: string; createdAt: number; enabled: boo
           Created: ${new Date(k.createdAt).toLocaleString()}
         </div>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
+      <div class="toggle-container">
         <div class="toggle ${k.enabled ? 'active' : ''}" data-key="${k.key}" data-enabled="${k.enabled}"></div>
         <button class="btn btn-danger delete-key" data-key="${k.key}">Delete</button>
       </div>
@@ -109,6 +127,14 @@ async function toggleApiKey(key: string, enabled: boolean): Promise<boolean> {
   });
 }
 
+async function detectProvider() {
+  return new Promise<{provider: string | null; supported: boolean}>((resolve) => {
+    chrome.runtime.sendMessage({ type: 'DETECT_PROVIDER' }, (response) => {
+      resolve(response || { provider: null, supported: false });
+    });
+  });
+}
+
 // Event Listeners
 generateKeyBtn?.addEventListener('click', async () => {
   const key = await generateNewKey();
@@ -132,6 +158,9 @@ copyEndpointBtn?.addEventListener('click', () => {
 async function init() {
   const status = await getServerStatus();
   updateStatus(status.running, status.port);
+  
+  const provider = await detectProvider();
+  updateProvider(provider.provider, provider.supported);
   
   const keys = await getApiKeys();
   renderApiKeys(keys);

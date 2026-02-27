@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AI Proxy",
-  "version": "1.0.0",
-  "description": "Expose AI chat as REST API for external tools like Cursor",
+  "version": "1.1.0",
+  "description": "Expose AI chats (Grok, OpenAI, DeepSeek, Claude, Gemini) as REST API for Cursor and other tools",
   "permissions": [
     "activeTab",
     "storage",
@@ -10,6 +10,15 @@
   ],
   "host_permissions": [
     "https://grok.x.ai/*",
+    "https://grok.com/*",
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.deepseek.com/*",
+    "https://deepseek.com/*",
+    "https://claude.ai/*",
+    "https://claude.com/*",
+    "https://gemini.google.com/*",
+    "https://bard.google.com/*",
     "http://localhost:7890/*"
   ],
   "background": {
@@ -18,22 +27,23 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://grok.x.ai/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://grok.x.ai/*",
+        "https://grok.com/*",
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://chat.deepseek.com/*",
+        "https://deepseek.com/*",
+        "https://claude.ai/*",
+        "https://claude.com/*",
+        "https://gemini.google.com/*",
+        "https://bard.google.com/*"
+      ],
+      "js": ["content/content.js"],
       "run_at": "document_end"
     }
   ],
   "action": {
-    "default_popup": "popup/popup.html",
-    "default_icon": {
-      "16": "popup/icon16.png",
-      "48": "popup/icon48.png",
-      "128": "popup/icon128.png"
-    }
-  },
-  "icons": {
-    "16": "popup/icon16.png",
-    "48": "popup/icon48.png",
-    "128": "popup/icon128.png"
+    "default_popup": "popup/popup.html"
   }
 }
