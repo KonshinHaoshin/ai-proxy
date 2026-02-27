@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Grok API Proxy",
+  "version": "1.0.0",
+  "description": "Expose Grok chat as REST API for external tools like Cursor",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://grok.x.ai/*",
+    "http://localhost:7890/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://grok.x.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "popup/icon16.png",
+      "48": "popup/icon48.png",
+      "128": "popup/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "popup/icon16.png",
+    "48": "popup/icon48.png",
+    "128": "popup/icon128.png"
+  }
+}
