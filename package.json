@@ -1,5 +1,5 @@
 {
-  "name": "grok-api-proxy",
+  "name": "ai-proxy",
   "version": "1.0.0",
   "description": "Chrome extension that exposes Grok chat as a REST API",
   "main": "dist/server.js",

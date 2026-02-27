@@ -49,7 +49,7 @@ async function init() {
     try {
         const port = await (0, apiServer_1.startApiServer)(apiKeys);
         (0, portManager_1.setLocalServerPort)(port);
-        console.log('[Grok API Proxy] Server started on port', port);
+        console.log('[AI Proxy] Server started on port', port);
     }
     catch (error) {
         console.error('[Grok API Proxy] Failed to start server:', error);

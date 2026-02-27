@@ -39,7 +39,7 @@ function initConversations() {
       }
     });
     
-    console.log('[Grok API Proxy] Found conversations:', conversations.size);
+    console.log('[AI Proxy] Found conversations:', conversations.size);
   } catch (e) {
     console.error('[Grok API Proxy] Error initializing:', e);
   }

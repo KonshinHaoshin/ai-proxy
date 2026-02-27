@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Grok API Proxy",
+  "name": "AI Proxy",
   "version": "1.0.0",
-  "description": "Expose Grok chat as REST API for external tools like Cursor",
+  "description": "Expose AI chat as REST API for external tools like Cursor",
   "permissions": [
     "activeTab",
     "storage",

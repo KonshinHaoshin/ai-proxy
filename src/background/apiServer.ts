@@ -230,7 +230,7 @@ export function startApiServer(keys: Map<string, GrokApiKey>): Promise<number> {
       const address = server.address();
       if (address && typeof address === 'object') {
         const port = address.port;
-        console.log(`[Grok API Proxy] Server running on http://127.0.0.1:${port}`);
+        console.log(`[AI Proxy] Server running on http://127.0.0.1:${port}`);
         resolve(port);
       } else {
         reject(new Error('Failed to get server port'));
