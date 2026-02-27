@@ -1,16 +1,37 @@
-﻿/**
+﻿(() => {
+/**
  * Background Service Worker
  * - API key management
  * - Bridge agent for local Node server
  */
-import { getLocalServerPort, setLocalServerPort } from './portManager';
-import type { BridgeHello, BridgeMessage, BridgeRequest } from '../shared/bridgeProtocol';
 
 interface ApiKey {
   key: string;
   createdAt: number;
   enabled: boolean;
 }
+
+interface BridgeRequest {
+  kind: 'request';
+  id: string;
+  method: string;
+  params: unknown;
+}
+
+type BridgeMessage =
+  | BridgeRequest
+  | {
+      kind: 'response';
+      id: string;
+      success: boolean;
+      result?: unknown;
+      error?: string;
+    }
+  | {
+      kind: 'hello';
+      role: 'extension' | 'server';
+      version: string;
+    };
 
 const apiKeys: Map<string, ApiKey> = new Map();
 const API_KEYS_STORAGE_KEY = 'ai_proxy_api_keys_v1';
@@ -31,6 +52,7 @@ const ALL_PROVIDER_PATTERNS = Object.values(PROVIDER_TAB_PATTERNS).flat();
 let bridgeSocket: WebSocket | null = null;
 let bridgeConnected = false;
 let reconnectTimer: number | null = null;
+let localServerPort: number | null = null;
 
 function storageGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve, reject) => {
@@ -93,7 +115,7 @@ function generateSecureToken(bytes = 24): string {
   return hex;
 }
 
-export function generateApiKey(): string {
+function generateApiKey(): string {
   const key = 'gkp_' + generateSecureToken(20);
   apiKeys.set(key, {
     key,
@@ -103,20 +125,20 @@ export function generateApiKey(): string {
   return key;
 }
 
-export function validateApiKey(key: string): boolean {
+function validateApiKey(key: string): boolean {
   const apiKey = apiKeys.get(key);
   return apiKey !== undefined && apiKey.enabled;
 }
 
-export function getApiKeys(): ApiKey[] {
+function getApiKeys(): ApiKey[] {
   return Array.from(apiKeys.values());
 }
 
-export function deleteApiKey(key: string): boolean {
+function deleteApiKey(key: string): boolean {
   return apiKeys.delete(key);
 }
 
-export function toggleApiKey(key: string, enabled: boolean): boolean {
+function toggleApiKey(key: string, enabled: boolean): boolean {
   const apiKey = apiKeys.get(key);
   if (apiKey) {
     apiKey.enabled = enabled;
@@ -135,6 +157,25 @@ function queryTabs(queryInfo: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]>
       }
       resolve(tabs);
     });
+  });
+}
+
+function executeContentScript(tabId: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript(
+      {
+        target: { tabId },
+        files: ['content/content.js']
+      },
+      () => {
+        const err = chrome.runtime.lastError;
+        if (err) {
+          reject(new Error(err.message));
+          return;
+        }
+        resolve();
+      }
+    );
   });
 }
 
@@ -159,7 +200,7 @@ function normalizeProviderName(provider?: string): string | null {
   return normalized in PROVIDER_TAB_PATTERNS ? normalized : null;
 }
 
-async function findTargetTab(provider?: string): Promise<chrome.tabs.Tab | null> {
+async function getCandidateTabs(provider?: string): Promise<chrome.tabs.Tab[]> {
   const normalizedProvider = normalizeProviderName(provider);
   const patterns = normalizedProvider
     ? PROVIDER_TAB_PATTERNS[normalizedProvider]
@@ -170,25 +211,55 @@ async function findTargetTab(provider?: string): Promise<chrome.tabs.Tab | null>
     active: true,
     currentWindow: true
   });
-  if (activeCurrentWindow.length > 0) {
-    return activeCurrentWindow[0];
-  }
+  if (activeCurrentWindow.length > 0) return activeCurrentWindow;
 
   const tabs = await queryTabs({ url: patterns });
-  if (tabs.length === 0) {
-    return null;
-  }
+  if (tabs.length === 0) return [];
 
   const activeAnyWindow = tabs.find((tab) => tab.active);
-  return activeAnyWindow || tabs[0];
+  if (activeAnyWindow?.id) {
+    return [activeAnyWindow, ...tabs.filter((tab) => tab.id !== activeAnyWindow.id)];
+  }
+  return tabs;
+}
+
+function isReceivingEndMissing(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Receiving end does not exist');
+}
+
+async function trySendWithAutoInject<T>(tabId: number, message: Record<string, unknown>): Promise<T> {
+  try {
+    return await sendMessageToTab<T>(tabId, message);
+  } catch (error) {
+    if (!isReceivingEndMissing(error)) {
+      throw error;
+    }
+    await executeContentScript(tabId);
+    return sendMessageToTab<T>(tabId, message);
+  }
 }
 
 async function sendToAiTab<T>(message: Record<string, unknown>, provider?: string): Promise<T> {
-  const targetTab = await findTargetTab(provider);
-  if (!targetTab?.id) {
+  const candidates = await getCandidateTabs(provider);
+  if (candidates.length === 0) {
     throw new Error('No supported AI tab is open. Open a provider page first.');
   }
-  return sendMessageToTab<T>(targetTab.id, message);
+
+  let lastError: unknown = null;
+  for (const tab of candidates) {
+    if (!tab.id) continue;
+    try {
+      return await trySendWithAutoInject<T>(tab.id, message);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+  throw new Error('No reachable AI tab found.');
 }
 
 function safeBridgeSend(message: BridgeMessage): void {
@@ -323,12 +394,11 @@ function connectBridge(): void {
 
   bridgeSocket.onopen = () => {
     bridgeConnected = true;
-    const hello: BridgeHello = {
+    safeBridgeSend({
       kind: 'hello',
       role: 'extension',
       version: '1.2.0'
-    };
-    safeBridgeSend(hello);
+    });
     console.log('[AI Proxy] Bridge connected:', AGENT_BRIDGE_URL);
   };
 
@@ -356,7 +426,7 @@ function connectBridge(): void {
 
 async function init() {
   await loadApiKeys();
-  setLocalServerPort(LOCAL_API_PORT);
+  localServerPort = LOCAL_API_PORT;
   connectBridge();
 }
 
@@ -390,7 +460,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   } else if (message.type === 'GET_SERVER_STATUS') {
     sendResponse({
       success: true,
-      port: getLocalServerPort(),
+      port: localServerPort,
       running: bridgeConnected
     });
   } else if (message.type === 'DETECT_PROVIDER') {
@@ -408,3 +478,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   return true;
 });
+
+})();
+

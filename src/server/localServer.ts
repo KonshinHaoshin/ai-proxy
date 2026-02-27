@@ -16,11 +16,17 @@ interface ChatSession {
   createdAt: number;
 }
 
+interface OpenAiChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content?: string | Array<{ type?: string; text?: string }>;
+}
+
 const HTTP_HOST = '127.0.0.1';
 const HTTP_PORT = 7890;
 const BRIDGE_HOST = '127.0.0.1';
 const BRIDGE_PORT = 7891;
 const BRIDGE_TIMEOUT_MS = 120000;
+const UNIFIED_MODEL_NAME = 'xmodel';
 
 const app = express();
 app.use(cors());
@@ -108,10 +114,29 @@ function requireBridge(_req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
+function extractApiKeyFromRequest(req: Request): string | null {
+  const xApiKey = req.headers['x-api-key'];
+  if (typeof xApiKey === 'string' && xApiKey.trim()) {
+    return xApiKey.trim();
+  }
+
+  const authorization = req.headers.authorization;
+  if (typeof authorization === 'string' && authorization.toLowerCase().startsWith('bearer ')) {
+    const token = authorization.slice(7).trim();
+    if (token) {
+      return token;
+    }
+  }
+
+  return null;
+}
+
 async function validateApiKey(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const apiKey = req.headers['x-api-key'] as string | undefined;
+  const apiKey = extractApiKeyFromRequest(req);
   if (!apiKey) {
-    res.status(401).json({ error: 'API key required. Provide it via X-API-Key header.' });
+    res.status(401).json({
+      error: 'API key required. Provide it via X-API-Key header or Authorization: Bearer <key>.'
+    });
     return;
   }
 
@@ -156,6 +181,20 @@ app.get('/v1/providers', requireBridge, validateApiKey, async (req: Request, res
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to detect provider.' });
   }
+});
+
+app.get('/v1/models', requireBridge, validateApiKey, (_req: Request, res: Response) => {
+  res.json({
+    object: 'list',
+    data: [
+      {
+        id: UNIFIED_MODEL_NAME,
+        object: 'model',
+        created: Math.floor(Date.now() / 1000),
+        owned_by: 'ai-proxy'
+      }
+    ]
+  });
 });
 
 app.get('/v1/sessions', requireBridge, validateApiKey, (_req: Request, res: Response) => {
@@ -260,8 +299,133 @@ app.post('/v1/chat', requireBridge, validateApiKey, async (req: Request, res: Re
     res.json({
       session_id: session.id,
       message: assistantMessage.content,
-      model: result.model || 'default',
+      model: UNIFIED_MODEL_NAME,
       usage: result.usage || {}
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to chat with AI.' });
+  }
+});
+
+function extractLastUserContent(messages: OpenAiChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== 'user') {
+      continue;
+    }
+    if (typeof message.content === 'string') {
+      const text = message.content.trim();
+      if (text) {
+        return text;
+      }
+      continue;
+    }
+    if (Array.isArray(message.content)) {
+      const text = message.content
+        .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+        .join('')
+        .trim();
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return '';
+}
+
+app.post('/v1/chat/completions', requireBridge, validateApiKey, async (req: Request, res: Response) => {
+  const body = req.body as {
+    model?: string;
+    messages?: OpenAiChatMessage[];
+    stream?: boolean;
+    provider?: string;
+    session_id?: string;
+  };
+
+  if (body.stream) {
+    res.status(400).json({ error: 'Streaming is not supported yet. Set "stream": false.' });
+    return;
+  }
+
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const prompt = extractLastUserContent(messages);
+  if (!prompt) {
+    res.status(400).json({ error: 'messages must include at least one non-empty user message.' });
+    return;
+  }
+
+  let session: ChatSession;
+  if (body.session_id && chatSessions.has(body.session_id)) {
+    session = chatSessions.get(body.session_id)!;
+  } else {
+    session = {
+      id: uuidv4(),
+      messages: [],
+      createdAt: Date.now()
+    };
+    chatSessions.set(session.id, session);
+  }
+
+  const userMessage: ChatMessage = {
+    role: 'user',
+    content: prompt,
+    timestamp: Date.now()
+  };
+  session.messages.push(userMessage);
+
+  try {
+    const result = await bridgeCall<{
+      content?: string;
+      model?: string;
+      provider?: string;
+      usage?: Record<string, unknown>;
+      error?: string;
+    }>('CHAT_WITH_AI', {
+      message: prompt,
+      sessionId: session.id,
+      model: UNIFIED_MODEL_NAME,
+      provider: body.provider
+    });
+
+    if (result.error) {
+      res.status(500).json({ error: result.error });
+      return;
+    }
+    if (!result.content) {
+      res.status(502).json({ error: 'AI provider returned an empty response.' });
+      return;
+    }
+
+    const assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: result.content,
+      timestamp: Date.now()
+    };
+    session.messages.push(assistantMessage);
+
+    const completionId = `chatcmpl_${uuidv4().replace(/-/g, '')}`;
+    const created = Math.floor(Date.now() / 1000);
+    res.json({
+      id: completionId,
+      object: 'chat.completion',
+      created,
+      model: UNIFIED_MODEL_NAME,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: assistantMessage.content
+          },
+          finish_reason: 'stop'
+        }
+      ],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0
+      },
+      session_id: session.id
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to chat with AI.' });

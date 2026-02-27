@@ -1,3 +1,4 @@
+﻿(() => {
 /**
  * Popup Script - Manage API keys and view status
  */
@@ -171,3 +172,6 @@ async function init() {
 }
 
 init();
+
+})();
+
