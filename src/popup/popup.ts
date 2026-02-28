@@ -12,6 +12,9 @@ const apiKeyListEl = document.getElementById('apiKeyList');
 const generateKeyBtn = document.getElementById('generateKey');
 const copyEndpointBtn = document.getElementById('copyEndpoint');
 const providerItems = document.querySelectorAll('.provider-item');
+const autoStartToggle = document.getElementById('autoStartToggle');
+const startServerNowBtn = document.getElementById('startServerNow');
+const serverLaunchMessage = document.getElementById('serverLaunchMessage');
 
 // Update status display
 function updateStatus(running: boolean, port?: number) {
@@ -140,6 +143,45 @@ async function detectProvider() {
   });
 }
 
+async function getAutoStartServerSetting(): Promise<boolean> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'GET_AUTO_START_SERVER' }, (response) => {
+      resolve(response?.enabled === true);
+    });
+  });
+}
+
+async function setAutoStartServerSetting(enabled: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'SET_AUTO_START_SERVER', enabled }, (response) => {
+      resolve(response?.enabled === true);
+    });
+  });
+}
+
+async function startServerNow(): Promise<{success: boolean; message: string}> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'START_LOCAL_SERVER' }, (response) => {
+      resolve({
+        success: response?.success === true,
+        message: response?.message || 'No response from background'
+      });
+    });
+  });
+}
+
+function renderAutoStartToggle(enabled: boolean) {
+  if (!autoStartToggle) return;
+  autoStartToggle.classList.toggle('active', enabled);
+  autoStartToggle.setAttribute('data-enabled', String(enabled));
+}
+
+function setLaunchMessage(message: string, isError = false) {
+  if (!serverLaunchMessage) return;
+  serverLaunchMessage.textContent = message;
+  serverLaunchMessage.style.color = isError ? '#fca5a5' : '#888';
+}
+
 // Event Listeners
 generateKeyBtn?.addEventListener('click', async () => {
   const key = await generateNewKey();
@@ -159,6 +201,31 @@ copyEndpointBtn?.addEventListener('click', () => {
   }
 });
 
+autoStartToggle?.addEventListener('click', async () => {
+  const current = autoStartToggle.getAttribute('data-enabled') === 'true';
+  const next = await setAutoStartServerSetting(!current);
+  renderAutoStartToggle(next);
+  setLaunchMessage(next ? 'Auto-start enabled' : 'Auto-start disabled', false);
+});
+
+startServerNowBtn?.addEventListener('click', async () => {
+  if (startServerNowBtn instanceof HTMLButtonElement) {
+    startServerNowBtn.disabled = true;
+    startServerNowBtn.textContent = 'Starting...';
+  }
+
+  const result = await startServerNow();
+  setLaunchMessage(result.message, !result.success);
+
+  const status = await getServerStatus();
+  updateStatus(status.running, status.port);
+
+  if (startServerNowBtn instanceof HTMLButtonElement) {
+    startServerNowBtn.disabled = false;
+    startServerNowBtn.textContent = 'Start Server Now';
+  }
+});
+
 // Initialize
 async function init() {
   const status = await getServerStatus();
@@ -169,6 +236,9 @@ async function init() {
   
   const keys = await getApiKeys();
   renderApiKeys(keys);
+
+  const autoStartEnabled = await getAutoStartServerSetting();
+  renderAutoStartToggle(autoStartEnabled);
 }
 
 init();

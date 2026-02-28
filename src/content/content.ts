@@ -3,6 +3,17 @@
  * Content Script - Intercepts AI Chat calls
  */
 
+interface WindowWithAiProxyGuard extends Window {
+  __AI_PROXY_CONTENT_SCRIPT_LOADED__?: boolean;
+}
+
+const guardedWindow = window as WindowWithAiProxyGuard;
+if (guardedWindow.__AI_PROXY_CONTENT_SCRIPT_LOADED__) {
+  console.log('[AI Proxy] Content script already loaded, skipping duplicate init');
+  return;
+}
+guardedWindow.__AI_PROXY_CONTENT_SCRIPT_LOADED__ = true;
+
 interface AIProvider {
   name: string;
   domains: string[];
@@ -21,7 +32,7 @@ interface ChatSession {
   createdAt: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 90000;
+const DEFAULT_TIMEOUT_MS = 180000;
 const POLL_INTERVAL_MS = 500;
 
 function delay(ms: number): Promise<void> {
@@ -62,7 +73,7 @@ function getLastTextBySelectors(selectors: string[]): string {
       continue;
     }
     const last = nodes[nodes.length - 1];
-    const text = last.textContent?.trim() || '';
+    const text = extractReadableText(last);
     if (text.length > 0) {
       return text;
     }
@@ -70,15 +81,217 @@ function getLastTextBySelectors(selectors: string[]): string {
   return '';
 }
 
+function collectNodesBySelectors(selectors: string[]): Element[] {
+  const seen = new Set<Element>();
+  const ordered: Element[] = [];
+  for (const selector of selectors) {
+    const nodes = document.querySelectorAll(selector);
+    for (const node of Array.from(nodes)) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      ordered.push(node);
+    }
+  }
+  return ordered;
+}
+
+function extractReadableText(node: Element): string {
+  const normalizePossibleHtml = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) return '';
+    const hasTagPattern = /<\/?[a-z][\s\S]*?>/i.test(trimmed);
+    const hasEncodedTagPattern = /&lt;\/?[a-z][\s\S]*?&gt;/i.test(trimmed);
+    if (!hasTagPattern && !hasEncodedTagPattern) {
+      return trimmed;
+    }
+
+    // If a provider returns raw HTML markup as text, parse and flatten it back to readable text.
+    const parser = document.createElement('div');
+    parser.innerHTML = trimmed;
+    const parsedText = parser.innerText?.trim() || parser.textContent?.trim() || '';
+    if (parsedText) return parsedText;
+
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = trimmed;
+    return textarea.value.trim();
+  };
+
+  if (node instanceof HTMLElement) {
+    const byInnerText = normalizePossibleHtml(node.innerText || '');
+    if (byInnerText) return byInnerText;
+  }
+  return normalizePossibleHtml(node.textContent || '');
+}
+
+function getLatestCandidateBySelectors(
+  selectors: string[],
+  baselineNodes?: Set<Element>,
+  baselineTexts?: Set<string>
+): string {
+  const ordered = collectNodesBySelectors(selectors);
+  for (let i = ordered.length - 1; i >= 0; i -= 1) {
+    if (baselineNodes?.has(ordered[i])) continue;
+    const text = extractReadableText(ordered[i]);
+    if (!text) continue;
+    if (baselineTexts?.has(normalizeForComparison(text))) continue;
+    if (looksLikeWorkspaceWrapper(text)) continue;
+    if (looksLikeTransientStatus(text)) continue;
+    if (looksLikeUiChromeText(text)) continue;
+    return text;
+  }
+  return '';
+}
+
+function normalizeText(input: string): string {
+  return input.replace(/\s+/g, ' ').trim();
+}
+
+function normalizeForComparison(input: string): string {
+  return normalizeText(input).toLowerCase();
+}
+
+function collectTextBaselineBySelectors(selectors: string[]): Set<string> {
+  const texts = new Set<string>();
+  const nodes = collectNodesBySelectors(selectors);
+  for (const node of nodes) {
+    const text = extractReadableText(node);
+    if (!text) continue;
+    const normalized = normalizeForComparison(text);
+    if (!normalized) continue;
+    texts.add(normalized);
+  }
+  return texts;
+}
+
+function looksLikeEchoResponse(candidate: string, sentMessage: string): boolean {
+  const c = normalizeText(candidate);
+  const s = normalizeText(sentMessage);
+  if (!c || !s) return false;
+  if (c === s) return true;
+  if (c.endsWith(s)) return true;
+  if (c.includes(`User request: ${s}`)) return true;
+  return false;
+}
+
+function getNewestNonEchoCandidate(
+  selectors: string[],
+  sentMessage: string,
+  previousSnapshot: string,
+  baselineNodes?: Set<Element>,
+  baselineTexts?: Set<string>
+): string {
+  const ordered = collectNodesBySelectors(selectors);
+  for (let i = ordered.length - 1; i >= 0; i -= 1) {
+    if (baselineNodes?.has(ordered[i])) continue;
+    const text = extractReadableText(ordered[i]);
+    if (!text) continue;
+    if (baselineTexts?.has(normalizeForComparison(text))) continue;
+    if (text === previousSnapshot) continue;
+    if (looksLikeWorkspaceWrapper(text)) continue;
+    if (looksLikeTransientStatus(text)) continue;
+    if (looksLikeUiChromeText(text)) continue;
+    if (looksLikeEchoResponse(text, sentMessage)) continue;
+    return text;
+  }
+  return '';
+}
+
+function looksLikeWorkspaceWrapper(candidate: string): boolean {
+  const c = normalizeText(candidate);
+  return c.includes('Workspace CWD:') && c.includes('User request:');
+}
+
+function looksLikeTransientStatus(candidate: string): boolean {
+  const c = normalizeText(candidate).toLowerCase();
+  if (!c) return true;
+  const transientHints = [
+    'grok正在搜索网页',
+    '正在搜索网页',
+    'searching the web',
+    'searching web',
+    'done collecting workspace context',
+    'phase: model reasoning',
+    'executed code',
+    ' sources',
+    'you>',
+    'assistant[',
+    '(phase:'
+  ];
+  return transientHints.some((hint) => c.includes(hint));
+}
+
+function looksLikeUiChromeText(candidate: string): boolean {
+  const c = normalizeText(candidate);
+  if (!c) return true;
+
+  if (c.length <= 8) {
+    const shortUiLabels = ['快速模式', '深度思考', '发送', '停止', '复制', '重试', '编辑'];
+    if (shortUiLabels.includes(c)) return true;
+  }
+
+  const uiHints = [
+    '快速模式',
+    '深度思考',
+    '自动换行',
+    '复制',
+    '收起',
+    '展开',
+    '重新生成',
+    '继续生成'
+  ];
+  return uiHints.some((hint) => c.includes(hint));
+}
+
 async function waitForAssistantReply(
   replySelectors: string[],
   previousSnapshot: string,
+  sentMessage: string,
+  baselineNodes: Set<Element>,
+  baselineTexts: Set<string>,
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<string> {
   const startedAt = Date.now();
+  let stableCandidate = '';
+  let stableSince = 0;
   while (Date.now() - startedAt < timeoutMs) {
-    const latest = getLastTextBySelectors(replySelectors);
-    if (latest && latest !== previousSnapshot) {
+    const latest =
+      getNewestNonEchoCandidate(replySelectors, sentMessage, previousSnapshot, baselineNodes, baselineTexts) ||
+      getLatestCandidateBySelectors(replySelectors, baselineNodes, baselineTexts);
+    if (!latest) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (latest === previousSnapshot) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (looksLikeEchoResponse(latest, sentMessage)) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (looksLikeWorkspaceWrapper(latest)) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (looksLikeTransientStatus(latest)) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (looksLikeUiChromeText(latest)) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (latest !== stableCandidate) {
+      stableCandidate = latest;
+      stableSince = Date.now();
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
+
+    if (Date.now() - stableSince >= 1200) {
       return latest;
     }
     await delay(POLL_INTERVAL_MS);
@@ -102,6 +315,8 @@ async function sendViaDomAutomation(options: {
   }
 
   const previousSnapshot = getLastTextBySelectors(options.responseSelectors);
+  const baselineNodes = new Set<Element>(collectNodesBySelectors(options.responseSelectors));
+  const baselineTexts = collectTextBaselineBySelectors(options.responseSelectors);
   setTextInputValue(input, options.message);
   await delay(200);
 
@@ -113,7 +328,13 @@ async function sendViaDomAutomation(options: {
   }
 
   sendButton.click();
-  return waitForAssistantReply(options.responseSelectors, previousSnapshot);
+  return waitForAssistantReply(
+    options.responseSelectors,
+    previousSnapshot,
+    options.message,
+    baselineNodes,
+    baselineTexts
+  );
 }
 
 const aiProviders: AIProvider[] = [
@@ -140,10 +361,19 @@ const aiProviders: AIProvider[] = [
           'button[data-testid*="send"]'
         ],
         responseSelectors: [
+          '.response-content-markdown',
+          'div[class*="response-content-markdown"]',
+          '.message-bubble .response-content-markdown',
           '[data-testid*="assistant"]',
+          '[data-message-author-role="assistant"]',
+          '[data-author="assistant"]',
+          '[data-role="assistant"]',
           '[class*="assistant"]',
-          '[class*="message"]',
-          '[class*="response"]'
+          'p.break-words',
+          'p[class*="break-words"]',
+          'main article',
+          'main [role="article"]',
+          'main [class*="prose"]'
         ]
       });
     }

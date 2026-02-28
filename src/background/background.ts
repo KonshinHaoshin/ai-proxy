@@ -35,9 +35,11 @@ type BridgeMessage =
 
 const apiKeys: Map<string, ApiKey> = new Map();
 const API_KEYS_STORAGE_KEY = 'ai_proxy_api_keys_v1';
+const AUTO_START_SERVER_STORAGE_KEY = 'ai_proxy_auto_start_server_v1';
 const AGENT_BRIDGE_URL = 'ws://127.0.0.1:7891/agent';
 const LOCAL_API_PORT = 7890;
 const BRIDGE_RETRY_MS = 2500;
+const NATIVE_HOST_NAME = 'ai_proxy.server_launcher';
 
 const PROVIDER_TAB_PATTERNS: Record<string, string[]> = {
   grok: ['*://grok.x.ai/*', '*://grok.com/*'],
@@ -53,6 +55,8 @@ let bridgeSocket: WebSocket | null = null;
 let bridgeConnected = false;
 let reconnectTimer: number | null = null;
 let localServerPort: number | null = null;
+let autoStartServerEnabled = false;
+let serverLaunchInFlight: Promise<{ success: boolean; message: string }> | null = null;
 
 function storageGet<T>(key: string): Promise<T | undefined> {
   return new Promise((resolve, reject) => {
@@ -94,6 +98,24 @@ async function loadApiKeys(): Promise<void> {
     }
   } catch (error) {
     console.error('[AI Proxy] Failed to load API keys from storage:', error);
+  }
+}
+
+async function loadAutoStartServerSetting(): Promise<void> {
+  try {
+    const stored = await storageGet<boolean>(AUTO_START_SERVER_STORAGE_KEY);
+    autoStartServerEnabled = stored === true;
+  } catch (error) {
+    console.error('[AI Proxy] Failed to load auto-start setting:', error);
+  }
+}
+
+async function persistAutoStartServerSetting(enabled: boolean): Promise<void> {
+  autoStartServerEnabled = enabled;
+  try {
+    await storageSet({ [AUTO_START_SERVER_STORAGE_KEY]: enabled });
+  } catch (error) {
+    console.error('[AI Proxy] Failed to persist auto-start setting:', error);
   }
 }
 
@@ -424,13 +446,74 @@ function connectBridge(): void {
   };
 }
 
+function sendNativeMessage<T>(payload: Record<string, unknown>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(NATIVE_HOST_NAME, payload, (response) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        reject(new Error(err.message));
+        return;
+      }
+      resolve(response as T);
+    });
+  });
+}
+
+async function launchLocalServer(): Promise<{ success: boolean; message: string }> {
+  if (serverLaunchInFlight) {
+    return serverLaunchInFlight;
+  }
+
+  serverLaunchInFlight = (async () => {
+    try {
+      const response = await sendNativeMessage<{ success?: boolean; message?: string }>({
+        action: 'start_server',
+        command: 'npm run server',
+        cwd: null
+      });
+      const success = response?.success === true;
+      const message = response?.message || (success ? 'Server start triggered' : 'Failed to start server');
+      return { success, message };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, message };
+    } finally {
+      serverLaunchInFlight = null;
+    }
+  })();
+
+  return serverLaunchInFlight;
+}
+
+async function tryAutoStartServer(trigger: string): Promise<void> {
+  if (!autoStartServerEnabled || bridgeConnected) {
+    return;
+  }
+  const result = await launchLocalServer();
+  if (!result.success) {
+    console.warn(`[AI Proxy] Auto-start failed (${trigger}):`, result.message);
+  } else {
+    console.log(`[AI Proxy] Auto-start triggered (${trigger})`);
+  }
+}
+
 async function init() {
   await loadApiKeys();
+  await loadAutoStartServerSetting();
   localServerPort = LOCAL_API_PORT;
   connectBridge();
+  void tryAutoStartServer('init');
 }
 
 void init();
+
+chrome.runtime.onStartup.addListener(() => {
+  void tryAutoStartServer('startup');
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  void tryAutoStartServer('installed');
+});
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'GENERATE_API_KEY') {
@@ -463,6 +546,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       port: localServerPort,
       running: bridgeConnected
     });
+  } else if (message.type === 'GET_AUTO_START_SERVER') {
+    sendResponse({ success: true, enabled: autoStartServerEnabled });
+  } else if (message.type === 'SET_AUTO_START_SERVER') {
+    (async () => {
+      const enabled = message.enabled === true;
+      await persistAutoStartServerSetting(enabled);
+      if (enabled) {
+        void tryAutoStartServer('setting_enabled');
+      }
+      sendResponse({ success: true, enabled: autoStartServerEnabled });
+    })();
+  } else if (message.type === 'START_LOCAL_SERVER') {
+    (async () => {
+      const result = await launchLocalServer();
+      sendResponse(result);
+    })();
   } else if (message.type === 'DETECT_PROVIDER') {
     (async () => {
       try {

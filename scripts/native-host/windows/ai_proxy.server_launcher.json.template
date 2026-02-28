@@ -1,0 +1,9 @@
+{
+  "name": "ai_proxy.server_launcher",
+  "description": "AI Proxy native host for launching local server",
+  "path": "REPLACE_WITH_HOST_LAUNCHER_PATH",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_YOUR_EXTENSION_ID/"
+  ]
+}

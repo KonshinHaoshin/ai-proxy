@@ -23,6 +23,26 @@ npm run server
 
 然后在 Chrome 扩展管理页启用开发者模式，加载 `dist` 目录。
 
+## Chrome 中自动启动 `npm run server`（可选）
+
+扩展内已提供：
+- `Enable auto start` 开关（扩展启动时自动尝试启动本地服务）
+- `Start Server Now` 按钮（手动触发启动）
+
+由于 Chrome 扩展本身不能直接执行本机命令，需先安装 Native Messaging Host（Windows）：
+
+1. 在 Chrome 扩展详情页复制扩展 ID
+2. PowerShell 设置环境变量并执行安装脚本
+
+```powershell
+$env:AI_PROXY_EXTENSION_ID="你的扩展ID"
+powershell -ExecutionPolicy Bypass -File .\scripts\native-host\windows\install-host.ps1
+```
+
+3. 可选：设置 `AI_PROXY_PROJECT_DIR` 环境变量指向本仓库根目录（用于 `npm run server` 的工作目录）
+
+说明：安装脚本会生成 `scripts/native-host/windows/host.cmd`，并让 Chrome 通过该启动器调用 `node host.js`。如果你之前点按钮会弹编辑器（例如 Cursor 打开 `host.js`），重跑一次安装脚本即可修复。
+
 ## 使用
 
 1. 打开扩展弹窗，点击 `Generate New API Key`

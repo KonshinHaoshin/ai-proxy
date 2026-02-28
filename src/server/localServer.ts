@@ -241,6 +241,11 @@ app.post('/v1/chat', requireBridge, validateApiKey, async (req: Request, res: Re
     res.status(400).json({ error: 'Message is required' });
     return;
   }
+  const normalizedMessage = normalizePromptForBrowser(message);
+  if (!normalizedMessage.trim()) {
+    res.status(400).json({ error: 'Message is empty after normalization.' });
+    return;
+  }
 
   let session: ChatSession;
   if (session_id) {
@@ -261,7 +266,7 @@ app.post('/v1/chat', requireBridge, validateApiKey, async (req: Request, res: Re
 
   const userMessage: ChatMessage = {
     role: 'user',
-    content: message,
+    content: normalizedMessage,
     timestamp: Date.now()
   };
   session.messages.push(userMessage);
@@ -274,7 +279,7 @@ app.post('/v1/chat', requireBridge, validateApiKey, async (req: Request, res: Re
       usage?: Record<string, unknown>;
       error?: string;
     }>('CHAT_WITH_AI', {
-      message,
+      message: normalizedMessage,
       sessionId: session.id,
       model: model || 'default',
       provider
@@ -333,6 +338,42 @@ function extractLastUserContent(messages: OpenAiChatMessage[]): string {
   return '';
 }
 
+function normalizePromptForBrowser(input: string): string {
+  const marker = 'User request:';
+  const idx = input.lastIndexOf(marker);
+  if (idx >= 0) {
+    const tail = input.slice(idx + marker.length).trim();
+    if (tail.length > 0) {
+      return tail;
+    }
+  }
+  return input;
+}
+
+function chunkForStreaming(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const chunks: string[] = [];
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      chunks.push('\n');
+      continue;
+    }
+
+    const parts = line.match(/.{1,24}/g) || [line];
+    for (const part of parts) {
+      chunks.push(part);
+    }
+    chunks.push('\n');
+  }
+
+  while (chunks.length > 0 && chunks[chunks.length - 1] === '\n') {
+    chunks.pop();
+  }
+  return chunks;
+}
+
 app.post('/v1/chat/completions', requireBridge, validateApiKey, async (req: Request, res: Response) => {
   const body = req.body as {
     model?: string;
@@ -342,13 +383,10 @@ app.post('/v1/chat/completions', requireBridge, validateApiKey, async (req: Requ
     session_id?: string;
   };
 
-  if (body.stream) {
-    res.status(400).json({ error: 'Streaming is not supported yet. Set "stream": false.' });
-    return;
-  }
+  const stream = body.stream === true;
 
   const messages = Array.isArray(body.messages) ? body.messages : [];
-  const prompt = extractLastUserContent(messages);
+  const prompt = normalizePromptForBrowser(extractLastUserContent(messages));
   if (!prompt) {
     res.status(400).json({ error: 'messages must include at least one non-empty user message.' });
     return;
@@ -405,6 +443,52 @@ app.post('/v1/chat/completions', requireBridge, validateApiKey, async (req: Requ
 
     const completionId = `chatcmpl_${uuidv4().replace(/-/g, '')}`;
     const created = Math.floor(Date.now() / 1000);
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+
+      const chunks = chunkForStreaming(assistantMessage.content);
+      for (const chunk of chunks) {
+        const payload = {
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model: UNIFIED_MODEL_NAME,
+          choices: [
+            {
+              index: 0,
+              delta: {
+                content: chunk
+              },
+              finish_reason: null
+            }
+          ]
+        };
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+
+      const donePayload = {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: UNIFIED_MODEL_NAME,
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: 'stop'
+          }
+        ]
+      };
+      res.write(`data: ${JSON.stringify(donePayload)}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+
     res.json({
       id: completionId,
       object: 'chat.completion',

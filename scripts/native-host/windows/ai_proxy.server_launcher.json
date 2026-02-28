@@ -1,0 +1,10 @@
+﻿{
+  "name": "ai_proxy.server_launcher",
+  "description": "AI Proxy native host for launching local server",
+  "path": "F:\\git\\ai-proxy\\scripts\\native-host\\windows\\host.cmd",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://pajpmjadpdgmmafnicbeioepaleklkal/"
+  ]
+}
+

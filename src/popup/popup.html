@@ -239,6 +239,21 @@
   </div>
   
   <div class="section">
+    <h2>Server Auto Start</h2>
+    <div class="api-key-item" style="margin-bottom: 10px;">
+      <div>
+        <div style="font-size: 13px; color: #ddd;">Enable auto start</div>
+        <div style="color: #888; font-size: 11px; margin-top: 4px;">Try to run <code>npm run server</code> when extension starts</div>
+      </div>
+      <div class="toggle-container">
+        <div class="toggle" id="autoStartToggle" data-enabled="false"></div>
+      </div>
+    </div>
+    <button class="btn btn-primary" id="startServerNow" style="width: 100%;">Start Server Now</button>
+    <p id="serverLaunchMessage" style="margin-top: 8px; font-size: 11px; color: #888;"></p>
+  </div>
+
+  <div class="section">
     <h2>API Endpoint</h2>
     <div class="api-endpoint" id="endpoint">http://127.0.0.1:7890</div>
     <button class="btn btn-primary copy-btn" id="copyEndpoint">Copy Endpoint</button>
